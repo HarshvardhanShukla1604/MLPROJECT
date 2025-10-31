@@ -96,6 +96,18 @@ if uploaded_file is not None:
         key=f"features_{target_col}",
     )
 
+    # Controls to limit resource usage on hosted runners
+    max_train_samples = st.number_input(
+        "Max training rows (sample if dataset is larger)",
+        min_value=100,
+        max_value=len(df) if len(df) > 0 else 100,
+        value=min(5000, len(df)),
+        step=100,
+        help="If your dataset is larger than this, we'll randomly sample down before training to reduce memory/CPU usage on hosted platforms.",
+    )
+
+    reuse_model = st.checkbox("Reuse trained model in this session if available", value=True)
+
     if st.button("Train Model"):
         if not features:
             st.error("Please select at least one feature for training.")
@@ -103,12 +115,35 @@ if uploaded_file is not None:
             try:
                 X = df[features]
                 y = df["target_encoded"]
+
+                # If dataset is large, sample to the requested max size before train/test split
+                if len(X) > int(max_train_samples):
+                    st.warning(f"Dataset has {len(X)} rows — sampling down to {int(max_train_samples)} rows for training.")
+                    sample_idx = np.random.RandomState(42).choice(X.index, size=int(max_train_samples), replace=False)
+                    X = X.loc[sample_idx].reset_index(drop=True)
+                    y = y.loc[sample_idx].reset_index(drop=True)
+
+                # If user has a trained model in this session and chose to reuse it, skip retraining
+                if reuse_model and st.session_state.get("trained_artifact") is not None:
+                    artifact = st.session_state["trained_artifact"]
+                    model = artifact["model"]
+                    le = artifact["label_encoder"]
+                    features = artifact["features"]
+                    st.info("Using previously trained model from this session.")
+                    # Still evaluate on a holdout sample
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+                else:
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
                 # Reduce resource usage on hosted environments
                 model = RandomForestClassifier(random_state=42, n_estimators=50, n_jobs=1)
-                with st.spinner("Training model..."):
-                    model.fit(X_train, y_train)
+                try:
+                    with st.spinner("Training model..."):
+                        model.fit(X_train, y_train)
+                except MemoryError:
+                    st.error("Training failed due to insufficient memory on the hosted environment. Try lowering 'Max training rows' or reducing model size (fewer trees).")
+                    raise
 
                 preds = model.predict(X_test)
                 st.success("✅ Model trained successfully!")
@@ -134,6 +169,12 @@ if uploaded_file is not None:
                     # Use pickle.dumps to create bytes directly (avoids repeated disk writes
                     # or filesystem race conditions on hosted platforms).
                     model_bytes = pickle.dumps(artifact)
+                    # Store the trained artifact in session_state for reuse during this session
+                    try:
+                        st.session_state["trained_artifact"] = artifact
+                    except Exception:
+                        # Session state may not be available in some contexts; ignore silently
+                        pass
                     st.download_button("📥 Download Trained Model", data=model_bytes, file_name="trained_model.pkl")
                     st.success("Saved artifact to in-memory bytes for download.")
                 except Exception as e:
