@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import pickle
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
@@ -75,7 +76,8 @@ if uploaded_file is not None:
                 fig = px.histogram(df_plot, x=col)
 
         # Provide a unique key to avoid StreamlitDuplicateElementId when rerunning
-        st.plotly_chart(fig, use_container_width=True, key=f"plot_{col}_{target_col}")
+        # Replace deprecated `use_container_width` with `width='stretch'`.
+        st.plotly_chart(fig, width='stretch', key=f"plot_{col}_{target_col}")
     except Exception as e:
         st.error(f"Could not create visualization: {e}")
         st.write(df[[col, target_col]].head())
@@ -103,7 +105,8 @@ if uploaded_file is not None:
                 y = df["target_encoded"]
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-                model = RandomForestClassifier(random_state=42)
+                # Reduce resource usage on hosted environments
+                model = RandomForestClassifier(random_state=42, n_estimators=50, n_jobs=1)
                 with st.spinner("Training model..."):
                     model.fit(X_train, y_train)
 
@@ -127,10 +130,14 @@ if uploaded_file is not None:
 
                 # Save artifact compatible with predict.py
                 artifact = {"model": model, "label_encoder": le, "features": features}
-                joblib.dump(artifact, "trained_model.pkl")
-                with open("trained_model.pkl", "rb") as f:
-                    model_bytes = f.read()
-                st.download_button("📥 Download Trained Model", data=model_bytes, file_name="trained_model.pkl")
+                try:
+                    # Use pickle.dumps to create bytes directly (avoids repeated disk writes
+                    # or filesystem race conditions on hosted platforms).
+                    model_bytes = pickle.dumps(artifact)
+                    st.download_button("📥 Download Trained Model", data=model_bytes, file_name="trained_model.pkl")
+                    st.success("Saved artifact to in-memory bytes for download.")
+                except Exception as e:
+                    st.exception(e)
             except Exception as e:
                 st.exception(e)
 
