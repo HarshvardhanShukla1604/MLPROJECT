@@ -1,0 +1,129 @@
+# -*- coding: utf-8 -*-
+
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+import joblib
+
+st.set_page_config(page_title="Job Market Trend Predictor", layout="wide")
+
+st.title("📊 Job Market Trend Analysis & Prediction")
+
+# --- Upload CSV ---
+uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
+
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    st.success("✅ File uploaded successfully!")
+
+    st.subheader("Data Preview")
+    st.dataframe(df.head())
+
+    # --- Cleaning ---
+    st.markdown("### 🧹 Cleaning the Data")
+    df.drop_duplicates(inplace=True)
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    cat_cols = df.select_dtypes(exclude=[np.number]).columns
+
+    df[num_cols] = df[num_cols].fillna(df[num_cols].median())
+    for col in cat_cols:
+        df[col] = df[col].fillna(df[col].mode()[0])
+
+    st.write("✅ Missing values handled.")
+    st.write(f"Remaining missing values: {df.isnull().sum().sum()}")
+
+    # --- Target Encoding ---
+    st.markdown("### 🎯 Encode Target Column")
+    target_col = st.selectbox("Select target column", df.columns)
+    le = LabelEncoder()
+    try:
+        # encode into a new column; catch errors to show to user instead of hanging
+        df["target_encoded"] = le.fit_transform(df[target_col].astype(str))
+        st.write(f"Target column `{target_col}` encoded. Classes: {list(le.classes_)[:10]}{('...' if len(le.classes_)>10 else '')}")
+    except Exception as e:
+        st.exception(e)
+        st.stop()
+
+    # --- Visualization ---
+    st.markdown("### 📈 Data Visualization")
+    col = st.selectbox("Select column to visualize", df.columns)
+    # Use the actual series for color to avoid ambiguity between column name and value
+    try:
+        # For very large datasets or many classes, sampling and disabling automatic
+        # color-by-target avoids long renders and browser hangs.
+        sample_n = min(len(df), 10000)
+        df_plot = df.sample(n=sample_n, random_state=42) if len(df) > sample_n else df
+
+        n_classes = df[target_col].nunique()
+        color_by_target = True
+        if n_classes > 50:
+            color_by_target = False
+            st.warning(f"Target has {n_classes} unique values — disabling automatic color-by-target to avoid slow plotting.")
+            if st.checkbox(f"Enable color by target anyway (show {n_classes} classes)?", value=False):
+                color_by_target = True
+
+        with st.spinner("Creating visualization..."):
+            if color_by_target:
+                fig = px.histogram(df_plot, x=col, color=df_plot[target_col])
+            else:
+                fig = px.histogram(df_plot, x=col)
+
+        # Provide a unique key to avoid StreamlitDuplicateElementId when rerunning
+        st.plotly_chart(fig, use_container_width=True, key=f"plot_{col}_{target_col}")
+    except Exception as e:
+        st.error(f"Could not create visualization: {e}")
+        st.write(df[[col, target_col]].head())
+    
+
+    # --- Modeling ---
+    st.markdown("### 🤖 Train a Model")
+    # Build options and safe defaults for the multiselect so defaults are always valid
+    feature_options = [c for c in df.columns if c not in [target_col, "target_encoded"]]
+    numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c in feature_options]
+    default_features = numeric_cols[:3]
+    features = st.multiselect(
+        "Select features for training",
+        feature_options,
+        default=default_features,
+        key=f"features_{target_col}",
+    )
+
+    if st.button("Train Model"):
+        if not features:
+            st.error("Please select at least one feature for training.")
+        else:
+            try:
+                X = df[features]
+                y = df["target_encoded"]
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+                model = RandomForestClassifier(random_state=42)
+                with st.spinner("Training model..."):
+                    model.fit(X_train, y_train)
+
+                preds = model.predict(X_test)
+                st.success("✅ Model trained successfully!")
+
+                st.text("Classification Report:")
+                st.text(classification_report(y_test, preds, target_names=le.classes_))
+
+                st.text("Confusion Matrix:")
+                st.write(confusion_matrix(y_test, preds))
+
+                # Save artifact compatible with predict.py
+                artifact = {"model": model, "label_encoder": le, "features": features}
+                joblib.dump(artifact, "trained_model.pkl")
+                with open("trained_model.pkl", "rb") as f:
+                    model_bytes = f.read()
+                st.download_button("📥 Download Trained Model", data=model_bytes, file_name="trained_model.pkl")
+            except Exception as e:
+                st.exception(e)
+
+else:
+    st.info("👆 Upload a CSV file to get started.")
