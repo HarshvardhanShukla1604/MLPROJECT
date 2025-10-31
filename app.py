@@ -111,10 +111,19 @@ if uploaded_file is not None:
                 st.success("✅ Model trained successfully!")
 
                 st.text("Classification Report:")
-                st.text(classification_report(y_test, preds, target_names=le.classes_))
+                # Only include labels that appear in the test set to avoid
+                # a mismatch between the number of classes and target_names
+                labels = np.unique(y_test)
+                try:
+                    target_names = le.inverse_transform(labels)
+                except Exception:
+                    # Fallback: use stringified labels if inverse transform fails
+                    target_names = [str(l) for l in labels]
+
+                st.text(classification_report(y_test, preds, labels=labels, target_names=target_names))
 
                 st.text("Confusion Matrix:")
-                st.write(confusion_matrix(y_test, preds))
+                st.write(confusion_matrix(y_test, preds, labels=labels))
 
                 # Save artifact compatible with predict.py
                 artifact = {"model": model, "label_encoder": le, "features": features}
